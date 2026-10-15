@@ -4,7 +4,7 @@ import { createDeepAgent } from 'deepagents';
 import { MemorySaver } from '@langchain/langgraph';
 import { model, backend } from './agents'
 import { calculatorTool, getCurrentTimeTool } from './tools';
-import { demoCalculator, demoExecuteShell } from './demos';
+import { demoCalculator, demo4ExecuteShell, demo6ExecuteShell } from './demos';
 
 // 创建 Agent：deepagents 内部会用 LangGraph 把流程编排成一张状态图，核心是两个节点来回跳
 // 「模型节点」判断要不要调工具 → 需要就去「工具节点」执行 → 结果回灌后再问模型，直到模型不再调工具
@@ -31,7 +31,9 @@ async function main() {
   // 默认跑第一个示例；想验证多轮记忆，把这里换成 demoFollowUp() 即可
   // await demoCalculator();
 
-  await demoExecuteShell()
+  // await demo4ExecuteShell()
+
+  await demo6ExecuteShell()
 }
 
 main()

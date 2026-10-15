@@ -1,8 +1,8 @@
 # ai-agent-study
 
-一个用于**学习 LLM Agent 调用流程**的最小示例项目：基于 `deepagents` + LangGraph 搭建 Agent，注册两个工具（计算器、获取时间），并把整轮 **ReAct**（推理 → 调工具 → 观察 → 再推理）的执行细节完整打印到终端。
+一个用于**学习 LLM Agent 调用流程**的最小示例项目：基于 `deepagents` + LangGraph 搭建 Agent，注册自定义工具（计算器、获取时间），并挂载文件系统后端（读写文件、搜索文件、执行 shell 命令），把整轮 **ReAct**（推理 → 调工具 → 观察 → 再推理）的执行细节完整打印到终端。
 
-重点不在"做出一个能用的 Agent"，而在**看清每一步到底发生了什么**：模型请求发了什么、模型响应回了什么、工具是谁执行的、上下文是怎么一轮轮累积的。
+重点不在"做出一个能用的 Agent"，而在**看清每一步到底发生了什么**：请求发了什么、响应回了什么、工具是谁执行的、上下文是怎么一轮轮累积的。
 
 ---
 
@@ -10,7 +10,7 @@
 
 | 依赖 | 作用 |
 | --- | --- |
-| `deepagents` | 创建 Agent，内部用 LangGraph 编排节点与流转 |
+| `deepagents` | 创建 Agent；提供 `LocalShellBackend`（文件系统 + shell 后端），内部用 LangGraph 编排节点与流转 |
 | `@langchain/langgraph` | 状态图运行时；`MemorySaver` 提供多轮记忆 |
 | `@langchain/anthropic` | 模型客户端（本项目指向 DeepSeek 的 Anthropic 兼容端点） |
 | `@langchain/core` | 消息、工具等基础抽象 |
@@ -27,8 +27,8 @@
 # 1. 安装依赖
 pnpm install
 
-# 2. 配置模型接入信息（见下方「配置」）
-#    编辑 src/config.ts
+# 2. 创建模型接入配置（该文件已被 .gitignore 忽略，不会随仓库分发）
+#    新建 src/config.ts，内容见下方「配置」
 
 # 3. 运行
 pnpm dev
@@ -49,12 +49,18 @@ npx tsx src/index.ts
 ai-agent-study/
 ├── package.json
 ├── pnpm-lock.yaml
+├── pnpm-workspace.yaml
+├── workspace/          # Agent 的文件操作根目录（backend 的 rootDir），也是它的"沙箱"
+│   ├── index.html      # Demo 4 运行后由 Agent 写入的文件
+│   └── public/
+│       └── script.sh   # Demo 6 运行后由 Agent 创建并执行的脚本
 └── src/
-    ├── config.ts   # 模型接入配置（密钥、接口地址、模型名）
-    ├── agents.ts   # 模型实例（ChatAnthropic，含 streaming / maxTokens / thinking 配置）
-    ├── tools.ts    # 工具定义（calculator、get_current_time）
-    ├── utils.ts    # 终端输出工具：printStream（把流式过程分门别类打印出来）
-    └── index.ts    # 入口：组装 Agent、发起对话、注册 trace 回调
+    ├── config.ts       # 模型接入配置（含密钥，已被 .gitignore 忽略，需自行创建）
+    ├── agents.ts       # 模型实例 + 文件系统后端 backend
+    ├── tools.ts        # 自定义工具（calculator、get_current_time）
+    ├── utils.ts        # 终端打印：printStream / printModelRequest / printModelResponse
+    ├── demos.ts        # 示例集合：createTraceCallbacks / demoCalculator / demoFollowUp / demo4~6ExecuteShell
+    └── index.ts        # 入口：组装 Agent 并启动某个示例
 ```
 
 ---
@@ -83,6 +89,72 @@ ai-agent-study/
 
 ---
 
+## Agent 的能力：自定义工具 + 文件后端
+
+Agent 实际可用的工具比 `createDeepAgent` 里手写的多，来源有两处：
+
+| 来源 | 工具 | 说明 |
+| --- | --- | --- |
+| `tools` 选项（自己写的） | `calculator`、`get_current_time` | 见 [src/tools.ts](src/tools.ts) |
+| `backend` 选项（deepagents 自动注入） | `ls`、`read_file`、`write_file`、`edit_file`、`delete`、`glob`、`grep`、`task` | 文件读写、检索，以及派生子任务 |
+
+所以运行日志里会看到 `[工具清单] 共 10 个`——就是这两部分相加的结果。
+
+文件后端在 [src/agents.ts](src/agents.ts) 中创建：
+
+```ts
+export const backend = await LocalShellBackend.create({
+  rootDir: workspaceDir,   // Agent 的文件操作根目录（项目下的 workspace/）
+  virtualMode: true,       // 虚拟路径模式
+  timeout: 30,             // shell 命令超时时间（秒）
+  maxOutputBytes: 50000,   // 命令输出最大字节数，防止输出刷屏
+});
+```
+
+| 参数 | 含义 |
+| --- | --- |
+| `rootDir` | 文件操作与 shell 命令的工作目录，即 `workspace/` 的绝对路径（用 `import.meta.dirname` 从 `src/` 上跳一级解析） |
+| `virtualMode` | `true` 时把 `rootDir` 当作**虚拟根文件系统**：传入的路径按虚拟绝对路径处理，禁止 `..`、`~` 这类向上穿越，并确保解析结果始终落在 root 内 |
+| `timeout` | 单条 shell 命令的超时时间 |
+| `maxOutputBytes` | 命令输出的截断上限 |
+
+> 注意：`virtualMode` **只约束文件操作，不限制 shell 命令**。也就是说模型仍可通过 shell 访问 `workspace/` 之外的内容——这是学习项目里的默认行为，真实产品务必配合权限与沙箱策略。
+
+另外，由于 backend 用的是支持 `execute` 的 `LocalShellBackend`，`createDeepAgent` 里不能再传 `permissions`（两者不兼容）。
+
+---
+
+## 示例（demos.ts）
+
+所有"怎么调用 Agent"的示例集中在 [src/demos.ts](src/demos.ts)：
+
+| 函数 | 会话 | 作用 |
+| --- | --- | --- |
+| `createTraceCallbacks()` | — | 返回请求/响应打印的两个 hook，供 `agent.stream` 的 `callbacks` 使用 |
+| `demoCalculator()` | `session-1` | 让模型算 128 × 47，观察完整的"模型 → 工具 → 模型"链路（挂了 traceCallbacks） |
+| `demoFollowUp()` | `session-1` | 在同一会话里追问"算的不对吧"，观察 `checkpointer` 带来的多轮记忆（挂了 traceCallbacks） |
+| `demo4ExecuteShell()` | `session-3` | 让模型往 HTML 文件里写入一个 `<h1>` 标签，观察文件写入能力 |
+| `demo5ExecuteShell()` | `session-3` | 让模型列出当前目录下的文件并统计数量，观察 `ls` / `glob` / `grep` 这类文件检索工具 |
+| `demo6ExecuteShell()` | `session-3` | 让模型在 `/public/` 下创建 `script.sh`（内容为 `echo "Hello World"`）并执行，观察 shell 执行与输出回灌 |
+
+切换示例：改 [src/index.ts](src/index.ts) 里 `main()` 调用的函数即可（当前默认跑 `demo6ExecuteShell()`）。
+
+```ts
+async function main() {
+  // await demoCalculator();
+
+  // await demo4ExecuteShell()
+
+  await demo6ExecuteShell()
+}
+```
+
+> Demo 4/5/6 共用 `config3`（`session-3`），且都没有挂 `traceCallbacks`，所以终端只输出流式的思考、工具调用与结果；想连"请求参数 / 响应结构"一起看，在它们的 `agent.stream` 选项里补上 `callbacks: createTraceCallbacks()` 即可。
+
+> `demos.ts` 与 `index.ts` 之间存在循环引用（后者引前者触发示例，前者引后者的 `agent`）。因为 `demos.ts` 只在函数体内使用 `agent`、模块顶层不访问，ESM 的 live binding 可以正常工作。
+
+---
+
 ## 终端输出说明
 
 运行时终端会分门别类地打印整轮过程，颜色用于区分不同来源的信息：
@@ -98,7 +170,7 @@ ai-agent-study/
 | `──────── 模型请求 #N ────────` | 品红 | 发给模型的完整参数：请求参数 / 工具清单 / 消息列表 |
 | `──────── 模型响应 #N ────────` | 品红 | 模型返回的原始结构：结束原因 / token 用量 / 原始 content / tool_calls |
 
-其中"模型请求 / 模型响应"两块由 [src/index.ts](src/index.ts) 中的 `traceCallbacks` 提供，挂在两个 hook 上：
+其中"模型请求 / 模型响应"两块由 [src/demos.ts](src/demos.ts) 的 `createTraceCallbacks` 提供，挂在两个 hook 上：
 
 - `handleChatModelStart`：请求前触发，能拿到模型配置、工具定义、完整消息列表。
 - `handleLLMEnd`：响应后触发，能拿到 AIMessage 的原始 content block、`tool_calls`、token 用量与响应 metadata。
@@ -107,7 +179,7 @@ ai-agent-study/
 
 ## 配置
 
-模型接入信息集中在 [src/config.ts](src/config.ts)：
+模型接入信息集中在 `src/config.ts`。**该文件已被 `.gitignore` 忽略**（含密钥，不随仓库分发），拉取代码后需自行创建：
 
 ```ts
 export const config = {
@@ -120,7 +192,7 @@ export const config = {
 说明：
 
 - 虽然用的是 `ChatAnthropic`，但通过 `anthropicApiUrl` 指向了 DeepSeek 的 Anthropic 兼容端点，所以实际调用的是 DeepSeek 的模型。
-- **密钥目前是明文写在代码里的，仅供本地学习调试**。正式项目请改用环境变量（如 `process.env.ANTHROPIC_API_KEY`），并确保不要提交到仓库。
+- **密钥目前是明文写在代码里的，仅供本地学习调试**。正式项目请改用环境变量（如 `process.env.ANTHROPIC_API_KEY`）。
 - 部分第三方网关不回传 `stop_reason` / `id` / `model`，此时 `[结束原因]` 会退化成"按有没有工具调用来推断"。
 - Anthropic 系接口支持 prompt 缓存，日志里的 `缓存读取` / `缓存写入` 即为命中情况。
 
@@ -132,4 +204,6 @@ export const config = {
 
 | 版本 | 日期 | 变更内容 |
 | --- | --- | --- |
+| v1.2.0 | 2026-10-15 | 工作区改动（尚未提交）：新增三个文件 / shell 操作示例 `demo4ExecuteShell`（写入 HTML）、`demo5ExecuteShell`（列目录并统计文件数）、`demo6ExecuteShell`（创建并执行 `script.sh`），共用会话 `config3`（`session-3`）；`workspace/` 下生成 `index.html` 与 `public/script.sh`；`index.ts` 默认改为跑 `demo6ExecuteShell()` |
+| v1.1.0 | 2026-10-15 | 对应提交 `40ccb94`：新增文件系统后端 `LocalShellBackend`（根目录 `workspace/`、开启 `virtualMode`、限制命令超时与输出大小），Agent 获得读写文件 / 搜索 / 执行 shell 的能力；示例代码抽到 `src/demos.ts`（`createTraceCallbacks`、`demoCalculator`、`demoFollowUp`、`demoExecuteShell`）；`index.ts` 精简为"组装 Agent + 启动示例"；请求/响应打印函数迁入 `src/utils.ts`；`pnpm-workspace.yaml` 中 esbuild 构建脚本设为 `false` |
 | v1.0.0 | 2026-10-15 | 初始版本：搭建 deepagents Agent（calculator、get_current_time 两个工具）；`printStream` 输出流式过程（用户提问、调用模型标记、思考、正文、工具调用与结果）；新增 `traceCallbacks`（`handleChatModelStart` / `handleLLMEnd`）展示模型请求与响应的完整结构；`printStream` 抽取到 `src/utils.ts`；补充各文件关键注释；补装 `tsx` 依赖，修复 `npm run dev` 找不到命令的问题 |

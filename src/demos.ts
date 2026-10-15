@@ -52,14 +52,40 @@ export async function demoFollowUp() {
 
 
 export const config3 = { configurable: { thread_id: 'session-3' } };
-// Demo 3
-export async function demoExecuteShell() {
-console.log('--- 测试 3：执行 shell 命令 ---');
-console.log('用户：执行 echo "Hello from Agent!" 命令');
+// Demo 4
+export async function demo4ExecuteShell() {
+console.log('--- 测试 5：执行 shell 命令 ---');
 process.stdout.write('助手：');
 
   const stream4 = await agent.stream(
     { messages: [{ role: 'user', content: '往idnex.html写入一个h1标签加上你好文案' }] },
+    { ...config3, streamMode: 'messages' },
+  );
+  await printStream(stream4);
+  console.log('\n');
+}
+
+
+// Demo 5
+export async function demo5ExecuteShell() {
+console.log('--- 测试 5：执行 shell 命令 ---');
+process.stdout.write('助手：');
+
+  const stream4 = await agent.stream(
+    { messages: [{ role: 'user', content: '帮我查看当前目录下的文件列表，并统计文件数量' }] },
+    { ...config3, streamMode: 'messages' },
+  );
+  await printStream(stream4);
+  console.log('\n');
+}
+
+// Demo 5
+export async function demo6ExecuteShell() {
+console.log('--- 测试 5：执行 shell 命令 ---');
+process.stdout.write('助手：');
+
+  const stream4 = await agent.stream(
+    { messages: [{ role: 'user', content: '在 /public/ 下创建一个 script.sh，内容是 echo "Hello World"，然后执行它' }] },
     { ...config3, streamMode: 'messages' },
   );
   await printStream(stream4);
