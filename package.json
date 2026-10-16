@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "tsx src/index"
+    "dev": "tsx src/index",
+    "server": "tsx src/server.ts"
   },
   "keywords": [],
   "author": "",
@@ -24,10 +25,12 @@
     "@langchain/langgraph": "^1.5.0",
     "deepagents": "^1.15.0",
     "langchain": "^1.5.16",
+    "ws": "^8.18.3",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
+    "@types/ws": "^8.5.13",
     "tsx": "^4.23.15"
   }
 }

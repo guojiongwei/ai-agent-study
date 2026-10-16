@@ -16,12 +16,16 @@
 | `@langchain/core` | 消息、工具等基础抽象 |
 | `zod` | 定义工具参数结构（会转成 JSON Schema 发给模型） |
 | `tsx` | 直接运行 TypeScript，免编译 |
+| `ws` | WebSocket 服务端（`src/server.ts`），把 Agent 的执行过程实时推给前端 |
+| `React 19` + `Vite` | `frontend/` 里的实时聊天界面（pnpm workspace 子包） |
 
 环境：Node.js 20+，包管理器 pnpm。
 
 ---
 
 ## 快速开始
+
+### 命令行示例
 
 ```bash
 # 1. 安装依赖
@@ -41,6 +45,18 @@ npx tsx src/index.ts
 > 注意：`tsx` 必须作为项目依赖安装（`pnpm add -D tsx`），否则 npm scripts 会报 `tsx: command not found`。
 > 用 `npx tsx` 能跑是因为 npx 会临时下载，绕过了本地依赖。
 
+### 实时聊天界面（两个终端）
+
+```bash
+# 终端 1：后端 WebSocket 服务（默认 3001）
+pnpm server
+
+# 终端 2：前端开发服务器（默认 5173）
+cd frontend && pnpm dev
+```
+
+打开 http://localhost:5173 即可对话，详见下方「实时聊天界面」。
+
 ---
 
 ## 目录结构
@@ -49,7 +65,15 @@ npx tsx src/index.ts
 ai-agent-study/
 ├── package.json
 ├── pnpm-lock.yaml
-├── pnpm-workspace.yaml
+├── pnpm-workspace.yaml   # 声明 frontend 为子包
+├── frontend/           # 实时聊天界面（Vite + React 19 + TS）
+│   ├── index.html
+│   ├── vite.config.ts  # 把 /ws 代理到后端 3001，前端只管连自己的 host
+│   └── src/
+│       ├── main.tsx / App.tsx / styles.css
+│       ├── types.ts    # 与后端共享的通信协议类型
+│       ├── hooks/useWebSocket.ts        # 协议 → React 状态
+│       └── components/  # ChatInterface / ApprovalModal / ToolCallViewer / SubagentMonitor / icons
 ├── workspace/          # Agent 的文件操作根目录（backend 的 rootDir），也是它的"沙箱"
 │   ├── AGENTS.md       # 持久记忆：用户偏好、项目上下文、编码约束（memory 选项加载）
 │   ├── conversation_history/   # 记忆机制落盘的会话记录（运行时生成，未纳入版本控制）
@@ -62,14 +86,16 @@ ai-agent-study/
 │       └── refund-policy/SKILL.md    # 退款政策
 └── src/
     ├── config.ts       # 模型接入配置（含密钥，已被 .gitignore 忽略，需自行创建）
-    ├── agents.ts       # 模型实例 + 文件系统后端 backend
+    ├── backend.ts      # 文件系统后端（LocalShellBackend，rootDir 指向 workspace/）
+    ├── agents.ts       # 模型实例 + Agent 组装（含 interruptOn 审批配置），全项目共用
     ├── tools.ts        # 自定义工具（calculator、get_current_time）
     ├── utils.ts        # 终端打印：printStream / printModelRequest / printModelResponse
     ├── middleware.ts   # 中间件：摘要压缩（summarization）+ 记忆注入（memory）
     ├── subagents.ts    # 子 Agent 定义：researcher（研究）/ coder（编码）/ reviewer（审查）
-    ├── hitl.ts         # 人工审批：中断检测、展示待审批操作、收集决策并恢复执行
+    ├── hitl.ts         # 命令行人工审批：中断检测、展示待审批操作、收集决策并恢复执行
+    ├── server.ts       # WebSocket 服务：把 Agent 执行过程推给前端，并接收审批决策
     ├── demos.ts        # 示例集合：demo1~9（调用流程）+ demo13~15（人工审批）
-    └── index.ts        # 入口：组装 Agent（含 interruptOn 审批配置）并启动某个示例
+    └── index.ts        # 入口：启动某个示例
 ```
 
 ---
@@ -135,7 +161,7 @@ export const backend = await LocalShellBackend.create({
 
 ## 持久记忆与领域技能
 
-[src/index.ts](src/index.ts) 里 `createDeepAgent` 还配了两个选项，让 Agent 拥有"跨会话的知识"：
+[src/agents.ts](src/agents.ts) 里 `createDeepAgent` 还配了两个选项，让 Agent 拥有"跨会话的知识"：
 
 ```ts
 checkpointer: new MemorySaver(),   // 会话内的多轮记忆（按 thread_id 隔离）
@@ -252,11 +278,57 @@ agent.invoke(Command, config)     ← 必须传同一个 config（同一个 thre
 四点关键：
 
 - **必须有 `checkpointer`**：中断时的状态要靠它保存，否则恢复不回来（本项目已有 `MemorySaver`）。
-- **恢复要用同一个 `config`**：所以 [src/hitl.ts](src/hitl.ts) 复用的是 [src/index.ts](src/index.ts) 导出的 `config`（`session-1`）。注意 `demos.ts` 里的 `config1` 是给 `agent.stream` 示例用的，两者 `thread_id` 相同但各自独立。
+- **恢复要用同一个 `config`**：中断状态是按 `thread_id` 存的，恢复时必须传同一个 id。[src/hitl.ts](src/hitl.ts) 自己定义了 `config`（`session-1`），和 `demos.ts` 里的 `config1` 恰好同 id 但互不相干。
 - **这批示例用 `agent.invoke` 而不是 `agent.stream`**：需要拿到完整状态判断"是否中断"，并靠 `Command` 恢复。
 - **必须在真实终端里运行**：审批要读键盘输入（`process.stdin`），管道或非交互式环境会一直等下去。
 
 验证方式见示例 `demo13InterruptExecute()`（shell 审批，只允许 y / n）、`demo14InterruptWriteFile()`（写文件审批，可以试 `e` 改参数）、`demo15MixedApproval()`（计算自动放行 + shell 触发审批）。
+
+---
+
+## 实时聊天界面
+
+上面那些示例是"在终端里看流程"，`src/server.ts` + `frontend/` 则把它做成一个网页：实时流式输出、弹窗审批、子 Agent 状态面板。
+
+启动见「快速开始 → 实时聊天界面」。架构很简单——前端只负责展示和收输入，所有 Agent 逻辑仍在后端：
+
+```
+浏览器 (frontend/)  ──WebSocket /ws──▶  src/server.ts  ──▶  agents.ts 里的 agent
+      │                                     │
+      └────── 展示 7 种下行事件 ◀────────────┘  流式输出 / 中断审批 / 去重都在这里处理
+```
+
+前端连的是自己 host 的 `/ws`，由 Vite 代理到 `localhost:3001`，所以代码里不用写后端地址。
+
+### 通信协议（2 种上行 + 7 种下行）
+
+类型定义在 [frontend/src/types.ts](frontend/src/types.ts)，前后端共用（后端只 `import type`，运行时不产生依赖）。
+
+| 方向 | 消息 | 说明 |
+| --- | --- | --- |
+| ↑ | `chat` | 发一条消息（`message` + `threadId`） |
+| ↑ | `decision` | 提交审批决策：`approve` / `reject` / `edit` 三种 |
+| ↓ | `text` | 正文增量 |
+| ↓ | `thinking` | 思考过程增量 |
+| ↓ | `tool_call` | 工具调用开始（已拼好完整参数） |
+| ↓ | `tool_result` | 工具执行结果 |
+| ↓ | `interrupt` | 需要审批，带 `actionRequests` + `reviewConfigs` |
+| ↓ | `done` | 本轮（含所有中断恢复）结束 |
+| ↓ | `error` | 出错 |
+
+### 后端要点（[src/server.ts](src/server.ts)）
+
+- **`decision` 单独路由**：不能再用 `ws.once('message')` 去等决策，否则会和外层 `ws.on('message')` 抢同一条消息。做法是维护 `pendingDecisions` 队列，`waitForDecision` 只往里放 waiter，真正的分发统一在最外层做。
+- **用 `agent.stream` 而不是 `invoke`**：否则用户要干等整轮跑完。订阅 `['messages', 'updates']`——`messages` 出正文/思考/工具，`updates` 用来抓 `__interrupt__`（`getState().isInterrupted` 在 deepagents 中间件下不可靠）。
+- **工具参数要攒**：流式下 `tool_use` 头部片的 `input` 是空对象 `{}`，参数在后续 `input_json_delta` / `tool_call_chunks` 碎片里。按 `index` 攒成合法 JSON 才发 `tool_call`，否则前端会看到空参数。
+- **恢复后要去重**：LangGraph 从中断恢复会重放节点，同一条消息会再次流出，所以按 `message.id` / `tool_call.id` 记在 `sentMessageIds` / `sentToolCallIds` 里。
+
+### 前端要点
+
+- [useWebSocket.ts](frontend/src/hooks/useWebSocket.ts) 把 7 种事件翻译成 React 状态，对外只暴露 `{ sendMessage, sendDecision, messages, interrupt, status, isLoading }`。流式数据用 `useRef` 同步累积、攒完再 `setState`（避免闭包陷阱），断线 5 秒后自动重连。
+- [ApprovalModal.tsx](frontend/src/components/ApprovalModal.tsx) 按 `reviewConfigs` 里的 `allowedDecisions` 决定显示哪些按钮（比如 `execute` 只给批准/拒绝），编辑模式下先校验 JSON 再提交。
+- [SubagentMonitor.tsx](frontend/src/components/SubagentMonitor.tsx) 从所有工具调用里筛 `name === 'task'` 的，按 `subagent_type` 显示 `researcher` / `coder` / `reviewer` 的状态。
+- [ChatInterface.tsx](frontend/src/components/ChatInterface.tsx) 的自动滚动用三个 ref 区分"用户主动上滚"和"程序滚动"：用户上滚后不再自动跟随，点右下角按钮才回到底部。
 
 ---
 
@@ -280,7 +352,7 @@ agent.invoke(Command, config)     ← 必须传同一个 config（同一个 thre
 | `demo14InterruptWriteFile()` | `session-1` | 让模型在 `/public/` 下写 `hitl-test.txt`，触发 `write_file` 的审批中断（可试 `e` 改参数） |
 | `demo15MixedApproval()` | `session-1` | 先算 256 ÷ 8（自动放行）再执行 `echo`（触发审批），观察同一轮里的两种处理 |
 
-切换示例：改 [src/index.ts](src/index.ts) 里 `main()` 调用的函数即可（当前默认跑 `demo13InterruptExecute()`）。
+切换示例：改 [src/index.ts](src/index.ts) 里 `main()` 调用的函数即可（当前默认跑 `demo15MixedApproval()`）。
 
 ```ts
 async function main() {
@@ -296,16 +368,16 @@ async function main() {
 
   // 下面三个是人工审批（HITL）示例：运行到需要审批的工具时，终端会暂停等待键盘输入
   // await demo14InterruptWriteFile()
-  // await demo15MixedApproval()
-  await demo13InterruptExecute()
+  await demo15MixedApproval()
+  // await demo13InterruptExecute()
 }
 ```
 
 > Demo 4/5/6 共用 `config3`（`session-3`），`demo6SkillsRefound` / `demo7Agents` / `demo8SkillsProduct` / `demo9SubAgentResearcher` 用 `config1`（`session-1`）。其中 `demo9SubAgentResearcher` 挂了 `traceCallbacks`，能在「模型请求」里看到主 Agent 是怎么向子 Agent 描述任务的；其余几例没挂，终端只输出流式的思考、工具调用与结果——想连"请求参数 / 响应结构"一起看，在它们的 `agent.stream` 选项里补上 `callbacks: createTraceCallbacks()` 即可。
 
-> `demo13` ~ `demo15` 不走 `agent.stream`：它们调用 [src/hitl.ts](src/hitl.ts) 的 `runWithInterruptHandling`，用的是 [src/index.ts](src/index.ts) 里的 `config`。
+> `demo13` ~ `demo15` 不走 `agent.stream`：它们调用 [src/hitl.ts](src/hitl.ts) 的 `runWithInterruptHandling`，用的是 [src/hitl.ts](src/hitl.ts) 里自己定义的 `config`。
 
-> `demos.ts`、`hitl.ts` 与 `index.ts` 之间存在循环引用（`index.ts` 引示例以触发运行，`demos.ts` / `hitl.ts` 引 `index.ts` 的 `agent` 与 `config`）。因为后两者都只在函数体内访问这些导出、模块顶层不碰，ESM 的 live binding 可以正常工作。
+> 文件职责：模型与 Agent 组装在 [src/agents.ts](src/agents.ts)，示例在 [src/demos.ts](src/demos.ts)，命令行审批在 [src/hitl.ts](src/hitl.ts)，WebSocket 服务在 [src/server.ts](src/server.ts)；[src/index.ts](src/index.ts) 只负责启动某个示例。`server.ts` 和 `demos.ts` / `hitl.ts` 都从 `agents.ts` 取同一个 `agent`。
 
 ---
 

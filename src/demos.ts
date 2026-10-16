@@ -1,7 +1,7 @@
 // Demo 示例集合：所有"怎么调用 Agent"的示例都集中在这里
 // index.ts 只负责组装 Agent 和启动，跑哪个示例由它调用下面的函数决定
 
-import { agent } from './index';
+import { agent } from './agents';
 import { printStream, printModelRequest, printModelResponse } from './utils';
 import { runWithInterruptHandling } from './hitl';
 

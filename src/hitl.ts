@@ -1,9 +1,12 @@
 // HITL（Human-in-the-Loop，人工介入审批）：Agent 执行到"需要审批"的工具时会中断，
 // 这里负责把待审批的操作展示给用户、收集决策（批准 / 拒绝 / 编辑），再用 Command 恢复执行
-// 配套配置见 index.ts 里 createDeepAgent 的 interruptOn（中断与恢复都依赖 checkpointer）
+// 配套配置见 agents.ts 里 createDeepAgent 的 interruptOn（中断与恢复都依赖 checkpointer）
 import { Command, INTERRUPT, isInterrupted } from '@langchain/langgraph';
 import type { HITLRequest, HITLResponse } from 'langchain';
-import { agent, config } from './index';
+import { agent } from './agents';
+
+// 会话标识：中断恢复必须用同一个 thread_id，否则恢复不回原来的执行状态
+const config = { configurable: { thread_id: 'session-1' } };
 
 // 处理一次中断：展示待审批操作 → 收集用户决策 → 恢复执行
 // 返回恢复后的最终状态；若本次没有中断则返回 null
