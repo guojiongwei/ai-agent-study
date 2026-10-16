@@ -64,6 +64,7 @@ ai-agent-study/
     ├── agents.ts       # 模型实例 + 文件系统后端 backend
     ├── tools.ts        # 自定义工具（calculator、get_current_time）
     ├── utils.ts        # 终端打印：printStream / printModelRequest / printModelResponse
+    ├── middleware.ts   # 中间件：摘要压缩（summarization）+ 记忆注入（memory）
     ├── demos.ts        # 示例集合：createTraceCallbacks / demoCalculator / demoFollowUp / demo4~6ExecuteShell / demo6Skills
     └── index.ts        # 入口：组装 Agent 并启动某个示例
 ```
@@ -162,6 +163,19 @@ description: 退款政策知识库，回答退款条件、退款时限、退款�
 
 验证方式见示例 `demo6Skills()`：直接问"退款政策是什么"。
 
+### 通过中间件增强记忆
+
+除上面两个选项外，[src/middleware.ts](src/middleware.ts) 里还定义了两个中间件，通过 `middleware` 选项挂到 Agent 上：
+
+| 中间件 | 作用 | 关键配置 |
+| --- | --- | --- |
+| `summarizationMiddleware` | 对话变长时把早期消息压缩成摘要，避免上下文无限增长（同时省 token） | 超过 20 条消息触发，保留最近 10 条原文 |
+| `memoryAgentsMiddleware` | 把 `AGENTS.md` 注入请求，让偏好与约束跨会话生效 | `sources: ['/AGENTS.md']`；`addCacheControl: true` 启用 prompt 缓存 |
+
+两者都复用同一个 `backend`，所以路径同样以 `workspace/` 为根。
+
+> 注意：`memory: ['/AGENTS.md']` 与 `memoryAgentsMiddleware` 的 `sources` 指向同一个文件，如果两者都生效，模型看到的 `AGENTS.md` 内容可能是双份。跑 `demo6Skills` 时对比 `[消息列表]` 里这段内容出现的次数，就能验证。
+
 ---
 
 ## 示例（demos.ts）
@@ -176,9 +190,11 @@ description: 退款政策知识库，回答退款条件、退款时限、退款�
 | `demo4ExecuteShell()` | `session-3` | 让模型往 HTML 文件里写入一个 `<h1>` 标签，观察文件写入能力 |
 | `demo5ExecuteShell()` | `session-3` | 让模型列出当前目录下的文件并统计数量，观察 `ls` / `glob` / `grep` 这类文件检索工具 |
 | `demo6ExecuteShell()` | `session-3` | 让模型在 `/public/` 下创建 `script.sh`（内容为 `echo "Hello World"`）并执行，观察 shell 执行与输出回灌 |
-| `demo6Skills()` | `session-1` | 问"退款政策是什么"，验证 `skills` 选项加载的领域知识能否被模型取用 |
+| `demo6SkillsRefound()` | `session-1` | 用"买了 100 元、用了 2 次，现在能退多少"这类需要规则计算的问题，验证 `refund-policy` 技能能否被取用 |
+| `demo7Agents()` | `session-1` | 让模型写一个合并数组的工具函数，验证 `AGENTS.md` 里的编码约束（TypeScript、中文注释等）是否被遵守 |
+| `demo8SkillsProduct()` | `session-1` | 问"这个项目支持哪些工具、怎么运行"，验证 `product-faq` 技能 |
 
-切换示例：改 [src/index.ts](src/index.ts) 里 `main()` 调用的函数即可（当前默认跑 `demo6Skills()`）。
+切换示例：改 [src/index.ts](src/index.ts) 里 `main()` 调用的函数即可（当前默认跑 `demo6SkillsRefound()`）。
 
 ```ts
 async function main() {
@@ -189,11 +205,12 @@ async function main() {
 
   // await demo6ExecuteShell()
 
-  await demo6Skills()
+  await demo6SkillsRefound()
+  // await demo7Agents()
 }
 ```
 
-> Demo 4/5/6 共用 `config3`（`session-3`），`demo6Skills` 用 `config1`（`session-1`），且这几例都没有挂 `traceCallbacks`，所以终端只输出流式的思考、工具调用与结果；想连"请求参数 / 响应结构"一起看，在它们的 `agent.stream` 选项里补上 `callbacks: createTraceCallbacks()` 即可。
+> Demo 4/5/6 共用 `config3`（`session-3`），`demo6SkillsRefound` / `demo7Agents` / `demo8SkillsProduct` 用 `config1`（`session-1`），且这几例都没有挂 `traceCallbacks`，所以终端只输出流式的思考、工具调用与结果；想连"请求参数 / 响应结构"一起看，在它们的 `agent.stream` 选项里补上 `callbacks: createTraceCallbacks()` 即可。
 
 > `demos.ts` 与 `index.ts` 之间存在循环引用（后者引前者触发示例，前者引后者的 `agent`）。因为 `demos.ts` 只在函数体内使用 `agent`、模块顶层不访问，ESM 的 live binding 可以正常工作。
 
@@ -248,6 +265,7 @@ export const config = {
 
 | 版本 | 日期 | 变更内容 |
 | --- | --- | --- |
+| v1.4.0 | 2026-10-16 | 工作区改动（尚未提交）：新增 `src/middleware.ts`，定义 `summarizationMiddleware`（超过 20 条消息触发摘要压缩、保留最近 10 条原文）与 `memoryAgentsMiddleware`（把 `AGENTS.md` 注入请求、启用 prompt 缓存）；`index.ts` 增加 `middleware` 选项挂载两者；README 新增「通过中间件增强记忆」小节；新增示例 `demo6SkillsRefound`（退款金额计算，验证 `refund-policy`）、`demo7Agents`（写工具函数，验证 `AGENTS.md`）、`demo8SkillsProduct`（项目 FAQ，验证 `product-faq`） |
 | v1.3.0 | 2026-10-16 | 对应提交 `c86d287`：新增 `workspace/AGENTS.md`（用户偏好、项目上下文、编码约束），`createDeepAgent` 增加 `memory: ['/AGENTS.md']` 与 `skills: ['/skills/']` 两个选项；新增三个技能文档 `code-review`、`product-faq`、`refund-policy`（均含带 YAML frontmatter 的 `SKILL.md`）；新增示例 `demo6Skills`（问「退款政策是什么」验证技能加载），`demoFollowUp` 的提问改为「再加10」；README 新增「持久记忆与领域技能」章节 |
 | v1.2.0 | 2026-10-15 | 对应提交 `5052487`：新增三个文件 / shell 操作示例 `demo4ExecuteShell`（写入 HTML）、`demo5ExecuteShell`（列目录并统计文件数）、`demo6ExecuteShell`（创建并执行 `script.sh`），共用会话 `config3`（`session-3`）；`workspace/` 下生成 `index.html` 与 `public/script.sh`；`index.ts` 默认改为跑 `demo6ExecuteShell()`；README 补充文件后端能力、示例用法与项目结构 |
 | v1.1.0 | 2026-10-15 | 对应提交 `40ccb94`：新增文件系统后端 `LocalShellBackend`（根目录 `workspace/`、开启 `virtualMode`、限制命令超时与输出大小），Agent 获得读写文件 / 搜索 / 执行 shell 的能力；示例代码抽到 `src/demos.ts`（`createTraceCallbacks`、`demoCalculator`、`demoFollowUp`、`demoExecuteShell`）；`index.ts` 精简为"组装 Agent + 启动示例"；请求/响应打印函数迁入 `src/utils.ts`；`pnpm-workspace.yaml` 中 esbuild 构建脚本设为 `false` |

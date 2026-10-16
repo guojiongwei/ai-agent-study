@@ -93,15 +93,35 @@ process.stdout.write('助手：');
 }
 
 
-// Demo 6
-export async function demo6Skills() {
+// Demo 6：验证 skills 配置——用一个需要退款规则才能算准的问题，看模型会不会去读技能文档
+export async function demo6SkillsRefound() {
 console.log('--- 测试 5：执行测试 skill 配置 ---');
 process.stdout.write('助手：');
 
+  // 没挂 callbacks：只观察模型会不会主动去读技能文档（预期能看到 read_file 调用）
   const stream4 = await agent.stream(
-    { messages: [{ role: 'user', content: '退款政策是什么' }] },
+    { messages: [{ role: 'user', content: '我前天买了一个产品100块钱，用了 2 次，现在想退款，能退多少？' }] },
     { ...config1, streamMode: 'messages' },
   );
   await printStream(stream4);
   console.log('\n');
+}
+
+// Demo 7：验证 memory（AGENTS.md）——让模型写代码，看它是否遵守里面的编码约束（TypeScript、中文注释等）
+export async function demo7Agents() {
+  const stream7 = await agent.stream(
+    { messages: [{ role: 'user', content: '帮我写一个简单的工具函数，把两个数组合并' }] },
+    { ...config1, streamMode: 'messages' },
+  );
+  await printStream(stream7);
+}
+
+
+// Demo 8：验证 product-faq 技能——问项目自身的问题，答案只存在于该技能文档里
+export async function demo8SkillsProduct() {
+  const stream7 = await agent.stream(
+    { messages: [{ role: 'user', content: '这个项目支持哪些工具？怎么运行？' }] },
+    { ...config1, streamMode: 'messages' },
+  );
+  await printStream(stream7);
 }
