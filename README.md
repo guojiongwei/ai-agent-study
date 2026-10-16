@@ -1,6 +1,6 @@
 # ai-agent-study
 
-一个用于**学习 LLM Agent 调用流程**的最小示例项目：基于 `deepagents` + LangGraph 搭建 Agent，注册自定义工具（计算器、获取时间），并挂载文件系统后端（读写文件、搜索文件、执行 shell 命令），把整轮 **ReAct**（推理 → 调工具 → 观察 → 再推理）的执行细节完整打印到终端。
+一个用于**学习 LLM Agent 调用流程**的最小示例项目：基于 `deepagents` + LangGraph 搭建 Agent，注册自定义工具（计算器、获取时间），挂载文件系统后端（读写文件、搜索文件、执行 shell 命令），并接入持久记忆（`AGENTS.md`）与领域技能（`skills/`），把整轮 **ReAct**（推理 → 调工具 → 观察 → 再推理）的执行细节完整打印到终端。
 
 重点不在"做出一个能用的 Agent"，而在**看清每一步到底发生了什么**：请求发了什么、响应回了什么、工具是谁执行的、上下文是怎么一轮轮累积的。
 
@@ -51,15 +51,20 @@ ai-agent-study/
 ├── pnpm-lock.yaml
 ├── pnpm-workspace.yaml
 ├── workspace/          # Agent 的文件操作根目录（backend 的 rootDir），也是它的"沙箱"
+│   ├── AGENTS.md       # 持久记忆：用户偏好、项目上下文、编码约束（memory 选项加载）
 │   ├── index.html      # Demo 4 运行后由 Agent 写入的文件
-│   └── public/
-│       └── script.sh   # Demo 6 运行后由 Agent 创建并执行的脚本
+│   ├── public/
+│   │   └── script.sh   # Demo 6 运行后由 Agent 创建并执行的脚本
+│   └── skills/         # 领域技能库：每个子目录是一个技能，内含 SKILL.md
+│       ├── code-review/SKILL.md      # 代码审查规范
+│       ├── product-faq/SKILL.md      # 产品常见问题
+│       └── refund-policy/SKILL.md    # 退款政策
 └── src/
     ├── config.ts       # 模型接入配置（含密钥，已被 .gitignore 忽略，需自行创建）
     ├── agents.ts       # 模型实例 + 文件系统后端 backend
     ├── tools.ts        # 自定义工具（calculator、get_current_time）
     ├── utils.ts        # 终端打印：printStream / printModelRequest / printModelResponse
-    ├── demos.ts        # 示例集合：createTraceCallbacks / demoCalculator / demoFollowUp / demo4~6ExecuteShell
+    ├── demos.ts        # 示例集合：createTraceCallbacks / demoCalculator / demoFollowUp / demo4~6ExecuteShell / demo6Skills
     └── index.ts        # 入口：组装 Agent 并启动某个示例
 ```
 
@@ -124,6 +129,41 @@ export const backend = await LocalShellBackend.create({
 
 ---
 
+## 持久记忆与领域技能
+
+[src/index.ts](src/index.ts) 里 `createDeepAgent` 还配了两个选项，让 Agent 拥有"跨会话的知识"：
+
+```ts
+checkpointer: new MemorySaver(),   // 会话内的多轮记忆（按 thread_id 隔离）
+memory: ['/AGENTS.md'],            // 持久记忆：加载该文件作为长期上下文
+skills: ['/skills/'],              // 领域技能：扫描该目录下所有含 SKILL.md 的子目录
+```
+
+`memory` 和 `skills` 的路径都以 `/` 开头，指向 backend 的 `rootDir`（即 `workspace/`）下的位置。这三种"记忆"的区别值得分清：
+
+| 机制 | 作用范围 | 存放位置 |
+| --- | --- | --- |
+| `checkpointer` + `thread_id` | **单次会话内**的历史消息，不同 `thread_id` 之间互不可见 | 进程内存（`MemorySaver`） |
+| `memory` | **跨会话**的长期偏好与约束，相当于 Agent 的"人设" | `workspace/AGENTS.md` |
+| `skills` | **按需取用**的领域知识，每个技能一份 `SKILL.md` | `workspace/skills/<技能名>/SKILL.md` |
+
+[workspace/AGENTS.md](workspace/AGENTS.md) 里写的是用户偏好（中文回复、camelCase 命名、中文行内注释）和项目上下文（pnpm、`pnpm dev` 运行）以及编码约束（工具必须有 Zod schema、错误信息用中文等）。
+
+`skills/` 下的每个子目录是一个技能，`SKILL.md` 用 YAML frontmatter 声明 `name` 和 `description`：
+
+```markdown
+---
+name: refund-policy
+description: 退款政策知识库，回答退款条件、退款时限、退款比例、申请流程、不予退款情形等问题时使用
+---
+```
+
+当前有三个技能：`code-review`（代码审查规范）、`product-faq`（产品常见问题）、`refund-policy`（退款政策）。`description` 是模型判断"这次要不要用这个技能"的依据，写得越具体越好。
+
+验证方式见示例 `demo6Skills()`：直接问"退款政策是什么"。
+
+---
+
 ## 示例（demos.ts）
 
 所有"怎么调用 Agent"的示例集中在 [src/demos.ts](src/demos.ts)：
@@ -132,24 +172,28 @@ export const backend = await LocalShellBackend.create({
 | --- | --- | --- |
 | `createTraceCallbacks()` | — | 返回请求/响应打印的两个 hook，供 `agent.stream` 的 `callbacks` 使用 |
 | `demoCalculator()` | `session-1` | 让模型算 128 × 47，观察完整的"模型 → 工具 → 模型"链路（挂了 traceCallbacks） |
-| `demoFollowUp()` | `session-1` | 在同一会话里追问"算的不对吧"，观察 `checkpointer` 带来的多轮记忆（挂了 traceCallbacks） |
+| `demoFollowUp()` | `session-1` | 在同一会话里追问"再加10"，观察 `checkpointer` 带来的多轮记忆（挂了 traceCallbacks） |
 | `demo4ExecuteShell()` | `session-3` | 让模型往 HTML 文件里写入一个 `<h1>` 标签，观察文件写入能力 |
 | `demo5ExecuteShell()` | `session-3` | 让模型列出当前目录下的文件并统计数量，观察 `ls` / `glob` / `grep` 这类文件检索工具 |
 | `demo6ExecuteShell()` | `session-3` | 让模型在 `/public/` 下创建 `script.sh`（内容为 `echo "Hello World"`）并执行，观察 shell 执行与输出回灌 |
+| `demo6Skills()` | `session-1` | 问"退款政策是什么"，验证 `skills` 选项加载的领域知识能否被模型取用 |
 
-切换示例：改 [src/index.ts](src/index.ts) 里 `main()` 调用的函数即可（当前默认跑 `demo6ExecuteShell()`）。
+切换示例：改 [src/index.ts](src/index.ts) 里 `main()` 调用的函数即可（当前默认跑 `demo6Skills()`）。
 
 ```ts
 async function main() {
   // await demoCalculator();
+  // await demoFollowUp()
 
   // await demo4ExecuteShell()
 
-  await demo6ExecuteShell()
+  // await demo6ExecuteShell()
+
+  await demo6Skills()
 }
 ```
 
-> Demo 4/5/6 共用 `config3`（`session-3`），且都没有挂 `traceCallbacks`，所以终端只输出流式的思考、工具调用与结果；想连"请求参数 / 响应结构"一起看，在它们的 `agent.stream` 选项里补上 `callbacks: createTraceCallbacks()` 即可。
+> Demo 4/5/6 共用 `config3`（`session-3`），`demo6Skills` 用 `config1`（`session-1`），且这几例都没有挂 `traceCallbacks`，所以终端只输出流式的思考、工具调用与结果；想连"请求参数 / 响应结构"一起看，在它们的 `agent.stream` 选项里补上 `callbacks: createTraceCallbacks()` 即可。
 
 > `demos.ts` 与 `index.ts` 之间存在循环引用（后者引前者触发示例，前者引后者的 `agent`）。因为 `demos.ts` 只在函数体内使用 `agent`、模块顶层不访问，ESM 的 live binding 可以正常工作。
 
@@ -204,6 +248,7 @@ export const config = {
 
 | 版本 | 日期 | 变更内容 |
 | --- | --- | --- |
-| v1.2.0 | 2026-10-15 | 工作区改动（尚未提交）：新增三个文件 / shell 操作示例 `demo4ExecuteShell`（写入 HTML）、`demo5ExecuteShell`（列目录并统计文件数）、`demo6ExecuteShell`（创建并执行 `script.sh`），共用会话 `config3`（`session-3`）；`workspace/` 下生成 `index.html` 与 `public/script.sh`；`index.ts` 默认改为跑 `demo6ExecuteShell()` |
+| v1.3.0 | 2026-10-16 | 对应提交 `c86d287`：新增 `workspace/AGENTS.md`（用户偏好、项目上下文、编码约束），`createDeepAgent` 增加 `memory: ['/AGENTS.md']` 与 `skills: ['/skills/']` 两个选项；新增三个技能文档 `code-review`、`product-faq`、`refund-policy`（均含带 YAML frontmatter 的 `SKILL.md`）；新增示例 `demo6Skills`（问「退款政策是什么」验证技能加载），`demoFollowUp` 的提问改为「再加10」；README 新增「持久记忆与领域技能」章节 |
+| v1.2.0 | 2026-10-15 | 对应提交 `5052487`：新增三个文件 / shell 操作示例 `demo4ExecuteShell`（写入 HTML）、`demo5ExecuteShell`（列目录并统计文件数）、`demo6ExecuteShell`（创建并执行 `script.sh`），共用会话 `config3`（`session-3`）；`workspace/` 下生成 `index.html` 与 `public/script.sh`；`index.ts` 默认改为跑 `demo6ExecuteShell()`；README 补充文件后端能力、示例用法与项目结构 |
 | v1.1.0 | 2026-10-15 | 对应提交 `40ccb94`：新增文件系统后端 `LocalShellBackend`（根目录 `workspace/`、开启 `virtualMode`、限制命令超时与输出大小），Agent 获得读写文件 / 搜索 / 执行 shell 的能力；示例代码抽到 `src/demos.ts`（`createTraceCallbacks`、`demoCalculator`、`demoFollowUp`、`demoExecuteShell`）；`index.ts` 精简为"组装 Agent + 启动示例"；请求/响应打印函数迁入 `src/utils.ts`；`pnpm-workspace.yaml` 中 esbuild 构建脚本设为 `false` |
 | v1.0.0 | 2026-10-15 | 初始版本：搭建 deepagents Agent（calculator、get_current_time 两个工具）；`printStream` 输出流式过程（用户提问、调用模型标记、思考、正文、工具调用与结果）；新增 `traceCallbacks`（`handleChatModelStart` / `handleLLMEnd`）展示模型请求与响应的完整结构；`printStream` 抽取到 `src/utils.ts`；补充各文件关键注释；补装 `tsx` 依赖，修复 `npm run dev` 找不到命令的问题 |
