@@ -4,8 +4,9 @@ import { createDeepAgent } from 'deepagents';
 import { MemorySaver } from '@langchain/langgraph';
 import { model, backend } from './agents'
 import { calculatorTool, getCurrentTimeTool } from './tools';
-import { demoCalculator, demoFollowUp, demo4ExecuteShell, demo6ExecuteShell, demo6SkillsRefound, demo7Agents } from './demos';
+import { demoCalculator, demoFollowUp, demo4ExecuteShell, demo6ExecuteShell, demo6SkillsRefound, demo7Agents, demo9SubAgentResearcher } from './demos';
 import { memoryAgentsMiddleware, summarizationMiddleware } from './middleware';
+import { subagents } from './subagents'
 
 // 创建 Agent：deepagents 内部会用 LangGraph 把流程编排成一张状态图，核心是两个节点来回跳
 // 「模型节点」判断要不要调工具 → 需要就去「工具节点」执行 → 结果回灌后再问模型，直到模型不再调工具
@@ -30,6 +31,8 @@ export const agent = createDeepAgent({
   // 领域知识：扫描 /skills/ 下所有子目录
   // 每个含 SKILL.md 的子目录被注册为一个 skill
   skills: ['/skills/'],
+  // 子 Agent：主 Agent 用 task 工具按 description 委派任务（定义见 subagents.ts）
+  subagents,
   // 中间件：摘要压缩 + 记忆注入（定义见 middleware.ts）
   middleware: [summarizationMiddleware, memoryAgentsMiddleware],
 });
@@ -44,8 +47,9 @@ async function main() {
 
   // await demo6ExecuteShell()
 
-  await demo6SkillsRefound()
+  // await demo6SkillsRefound()
   // await demo7Agents()
+  await demo9SubAgentResearcher()
 }
 
 main()

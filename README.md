@@ -1,6 +1,6 @@
 # ai-agent-study
 
-一个用于**学习 LLM Agent 调用流程**的最小示例项目：基于 `deepagents` + LangGraph 搭建 Agent，注册自定义工具（计算器、获取时间），挂载文件系统后端（读写文件、搜索文件、执行 shell 命令），并接入持久记忆（`AGENTS.md`）与领域技能（`skills/`），把整轮 **ReAct**（推理 → 调工具 → 观察 → 再推理）的执行细节完整打印到终端。
+一个用于**学习 LLM Agent 调用流程**的最小示例项目：基于 `deepagents` + LangGraph 搭建 Agent，注册自定义工具（计算器、获取时间），挂载文件系统后端（读写文件、搜索文件、执行 shell 命令），接入持久记忆（`AGENTS.md`）与领域技能（`skills/`），还能把任务委派给专职子 Agent（`subagents`），并把整轮 **ReAct**（推理 → 调工具 → 观察 → 再推理）的执行细节完整打印到终端。
 
 重点不在"做出一个能用的 Agent"，而在**看清每一步到底发生了什么**：请求发了什么、响应回了什么、工具是谁执行的、上下文是怎么一轮轮累积的。
 
@@ -52,6 +52,7 @@ ai-agent-study/
 ├── pnpm-workspace.yaml
 ├── workspace/          # Agent 的文件操作根目录（backend 的 rootDir），也是它的"沙箱"
 │   ├── AGENTS.md       # 持久记忆：用户偏好、项目上下文、编码约束（memory 选项加载）
+│   ├── conversation_history/   # 记忆机制落盘的会话记录（运行时生成，未纳入版本控制）
 │   ├── index.html      # Demo 4 运行后由 Agent 写入的文件
 │   ├── public/
 │   │   └── script.sh   # Demo 6 运行后由 Agent 创建并执行的脚本
@@ -65,7 +66,8 @@ ai-agent-study/
     ├── tools.ts        # 自定义工具（calculator、get_current_time）
     ├── utils.ts        # 终端打印：printStream / printModelRequest / printModelResponse
     ├── middleware.ts   # 中间件：摘要压缩（summarization）+ 记忆注入（memory）
-    ├── demos.ts        # 示例集合：createTraceCallbacks / demoCalculator / demoFollowUp / demo4~6ExecuteShell / demo6Skills
+    ├── subagents.ts    # 子 Agent 定义：researcher（研究）/ coder（编码）/ reviewer（审查）
+    ├── demos.ts        # 示例集合：createTraceCallbacks / demoCalculator / demoFollowUp / demo4~6ExecuteShell / demo6SkillsRefound / demo7Agents / demo8SkillsProduct / demo9SubAgentResearcher
     └── index.ts        # 入口：组装 Agent 并启动某个示例
 ```
 
@@ -148,7 +150,7 @@ skills: ['/skills/'],              // 领域技能：扫描该目录下所有含
 | `memory` | **跨会话**的长期偏好与约束，相当于 Agent 的"人设" | `workspace/AGENTS.md` |
 | `skills` | **按需取用**的领域知识，每个技能一份 `SKILL.md` | `workspace/skills/<技能名>/SKILL.md` |
 
-[workspace/AGENTS.md](workspace/AGENTS.md) 里写的是用户偏好（中文回复、camelCase 命名、中文行内注释）和项目上下文（pnpm、`pnpm dev` 运行）以及编码约束（工具必须有 Zod schema、错误信息用中文等）。
+[workspace/AGENTS.md](workspace/AGENTS.md) 里写的是用户偏好（中文回复、camelCase 命名、中文行内注释）和项目上下文（pnpm、`pnpm dev` 运行）以及编码约束（工具必须有 Zod schema、错误信息用中文等）。其中一条「环境注意」尤其值得记住：**文件工具（`ls` / `read_file` / `write_file` 等）作用于虚拟工作目录（根为 `/`），而 `execute` 的 shell 沙箱是另一套真实文件系统，两者不互通**——所以不要用 `execute` 去验证文件工具看到的路径。
 
 `skills/` 下的每个子目录是一个技能，`SKILL.md` 用 YAML frontmatter 声明 `name` 和 `description`：
 
@@ -161,7 +163,7 @@ description: 退款政策知识库，回答退款条件、退款时限、退款�
 
 当前有三个技能：`code-review`（代码审查规范）、`product-faq`（产品常见问题）、`refund-policy`（退款政策）。`description` 是模型判断"这次要不要用这个技能"的依据，写得越具体越好。
 
-验证方式见示例 `demo6Skills()`：直接问"退款政策是什么"。
+验证方式见示例 `demo6SkillsRefound()`：问"我前天买了 100 元的产品、用了 2 次，现在想退款，能退多少"，答案必须按 `refund-policy` 里的规则算出来。
 
 ### 通过中间件增强记忆
 
@@ -174,7 +176,37 @@ description: 退款政策知识库，回答退款条件、退款时限、退款�
 
 两者都复用同一个 `backend`，所以路径同样以 `workspace/` 为根。
 
-> 注意：`memory: ['/AGENTS.md']` 与 `memoryAgentsMiddleware` 的 `sources` 指向同一个文件，如果两者都生效，模型看到的 `AGENTS.md` 内容可能是双份。跑 `demo6Skills` 时对比 `[消息列表]` 里这段内容出现的次数，就能验证。
+> 注意：`memory: ['/AGENTS.md']` 与 `memoryAgentsMiddleware` 的 `sources` 指向同一个文件，如果两者都生效，模型看到的 `AGENTS.md` 内容可能是双份。跑 `demo6SkillsRefound` 时对比 `[消息列表]` 里这段内容出现的次数，就能验证。
+
+---
+
+## 子 Agent（subagents）
+
+[src/subagents.ts](src/subagents.ts) 里定义了三个专职子 Agent，通过 `createDeepAgent` 的 `subagents` 选项注册：
+
+| 子 Agent | 职责 | 能力约束 |
+| --- | --- | --- |
+| `researcher` | 收集信息、搜索文件、阅读内容，产出结构化分析报告 | 提示词要求"只研究和报告，不修改任何文件" |
+| `coder` | 编写代码、创建文件、执行命令、运行测试 | 读写文件 + shell |
+| `reviewer` | 审查代码的正确性、可读性、性能、安全性 | 提示词要求"只审查和建议，不修改任何文件" |
+
+委派机制：主 Agent 不必自己做所有事——它可以调用内置的 `task` 工具把子任务交出去，子 Agent 在**独立上下文**中完成后把结果返回。**选哪个子 Agent 由各自的 `description` 决定**（和技能的 `description` 同理，写得越具体，选择越准）：
+
+```ts
+export const researcher: SubAgent = {
+  name: 'researcher',
+  description: '研究助手，擅长信息收集、文件搜索和内容分析。当需要查找资料、阅读文件、总结内容时，委派给这个子 Agent。',
+  systemPrompt: '...',
+};
+```
+
+三点注意：
+
+- 三个子 Agent 都**没有单独指定 `tools` / `backend`**，能力继承自主 Agent，差异主要来自 `systemPrompt` 的职责约束。
+- [src/subagents.ts](src/subagents.ts) 里 `reviewer` 有一段被注释掉的 `permissions`：`permissions` 会**替换**而非合并主 Agent 的权限配置，且与支持 `execute` 的 `LocalShellBackend` 不兼容。所以"只读"目前靠提示词约束，**不是真正的隔离**。
+- 子 Agent 有自己的上下文，主 Agent 只拿到它返回的结论——这也是控制上下文膨胀的常用手段。
+
+验证方式见示例 `demo9SubAgentResearcher()`：给一个"研究目录结构 + 顺手改 HTML 字体颜色"的复合任务，观察主 Agent 如何把两个子任务分别交给 `researcher` 和 `coder`。
 
 ---
 
@@ -193,8 +225,9 @@ description: 退款政策知识库，回答退款条件、退款时限、退款�
 | `demo6SkillsRefound()` | `session-1` | 用"买了 100 元、用了 2 次，现在能退多少"这类需要规则计算的问题，验证 `refund-policy` 技能能否被取用 |
 | `demo7Agents()` | `session-1` | 让模型写一个合并数组的工具函数，验证 `AGENTS.md` 里的编码约束（TypeScript、中文注释等）是否被遵守 |
 | `demo8SkillsProduct()` | `session-1` | 问"这个项目支持哪些工具、怎么运行"，验证 `product-faq` 技能 |
+| `demo9SubAgentResearcher()` | `session-1` | 给一个"研究目录结构 + 修改 `index.html` 字体颜色"的复合任务，观察主 Agent 如何把两个子任务分别委派给 `researcher` 和 `coder` |
 
-切换示例：改 [src/index.ts](src/index.ts) 里 `main()` 调用的函数即可（当前默认跑 `demo6SkillsRefound()`）。
+切换示例：改 [src/index.ts](src/index.ts) 里 `main()` 调用的函数即可（当前默认跑 `demo9SubAgentResearcher()`）。
 
 ```ts
 async function main() {
@@ -205,12 +238,13 @@ async function main() {
 
   // await demo6ExecuteShell()
 
-  await demo6SkillsRefound()
+  // await demo6SkillsRefound()
   // await demo7Agents()
+  await demo9SubAgentResearcher()
 }
 ```
 
-> Demo 4/5/6 共用 `config3`（`session-3`），`demo6SkillsRefound` / `demo7Agents` / `demo8SkillsProduct` 用 `config1`（`session-1`），且这几例都没有挂 `traceCallbacks`，所以终端只输出流式的思考、工具调用与结果；想连"请求参数 / 响应结构"一起看，在它们的 `agent.stream` 选项里补上 `callbacks: createTraceCallbacks()` 即可。
+> Demo 4/5/6 共用 `config3`（`session-3`），`demo6SkillsRefound` / `demo7Agents` / `demo8SkillsProduct` / `demo9SubAgentResearcher` 用 `config1`（`session-1`）。其中 `demo9SubAgentResearcher` 挂了 `traceCallbacks`，能在「模型请求」里看到主 Agent 是怎么向子 Agent 描述任务的；其余几例没挂，终端只输出流式的思考、工具调用与结果——想连"请求参数 / 响应结构"一起看，在它们的 `agent.stream` 选项里补上 `callbacks: createTraceCallbacks()` 即可。
 
 > `demos.ts` 与 `index.ts` 之间存在循环引用（后者引前者触发示例，前者引后者的 `agent`）。因为 `demos.ts` 只在函数体内使用 `agent`、模块顶层不访问，ESM 的 live binding 可以正常工作。
 
@@ -265,7 +299,8 @@ export const config = {
 
 | 版本 | 日期 | 变更内容 |
 | --- | --- | --- |
-| v1.4.0 | 2026-10-16 | 工作区改动（尚未提交）：新增 `src/middleware.ts`，定义 `summarizationMiddleware`（超过 20 条消息触发摘要压缩、保留最近 10 条原文）与 `memoryAgentsMiddleware`（把 `AGENTS.md` 注入请求、启用 prompt 缓存）；`index.ts` 增加 `middleware` 选项挂载两者；README 新增「通过中间件增强记忆」小节；新增示例 `demo6SkillsRefound`（退款金额计算，验证 `refund-policy`）、`demo7Agents`（写工具函数，验证 `AGENTS.md`）、`demo8SkillsProduct`（项目 FAQ，验证 `product-faq`） |
+| v1.5.0 | 2026-10-16 | 工作区改动（尚未提交）：新增 `src/subagents.ts`（`researcher` / `coder` / `reviewer` 三个子 Agent），`index.ts` 增加 `subagents` 选项；新增示例 `demo9SubAgentResearcher`（研究 + 改文件的复合任务，已挂 `traceCallbacks` 便于观察委派过程）；`workspace/AGENTS.md` 新增「环境注意」（文件工具的虚拟目录与 `execute` 的真实文件系统互不通用）；`workspace/conversation_history/` 为记忆机制落盘的会话记录；README 新增「子 Agent（subagents）」章节 |
+| v1.4.0 | 2026-10-16 | 对应提交 `ffa8e32`：新增 `src/middleware.ts`，定义 `summarizationMiddleware`（超过 20 条消息触发摘要压缩、保留最近 10 条原文）与 `memoryAgentsMiddleware`（把 `AGENTS.md` 注入请求、启用 prompt 缓存）；`index.ts` 增加 `middleware` 选项挂载两者；README 新增「通过中间件增强记忆」小节；新增示例 `demo6SkillsRefound`（退款金额计算，验证 `refund-policy`）、`demo7Agents`（写工具函数，验证 `AGENTS.md`）、`demo8SkillsProduct`（项目 FAQ，验证 `product-faq`） |
 | v1.3.0 | 2026-10-16 | 对应提交 `c86d287`：新增 `workspace/AGENTS.md`（用户偏好、项目上下文、编码约束），`createDeepAgent` 增加 `memory: ['/AGENTS.md']` 与 `skills: ['/skills/']` 两个选项；新增三个技能文档 `code-review`、`product-faq`、`refund-policy`（均含带 YAML frontmatter 的 `SKILL.md`）；新增示例 `demo6Skills`（问「退款政策是什么」验证技能加载），`demoFollowUp` 的提问改为「再加10」；README 新增「持久记忆与领域技能」章节 |
 | v1.2.0 | 2026-10-15 | 对应提交 `5052487`：新增三个文件 / shell 操作示例 `demo4ExecuteShell`（写入 HTML）、`demo5ExecuteShell`（列目录并统计文件数）、`demo6ExecuteShell`（创建并执行 `script.sh`），共用会话 `config3`（`session-3`）；`workspace/` 下生成 `index.html` 与 `public/script.sh`；`index.ts` 默认改为跑 `demo6ExecuteShell()`；README 补充文件后端能力、示例用法与项目结构 |
 | v1.1.0 | 2026-10-15 | 对应提交 `40ccb94`：新增文件系统后端 `LocalShellBackend`（根目录 `workspace/`、开启 `virtualMode`、限制命令超时与输出大小），Agent 获得读写文件 / 搜索 / 执行 shell 的能力；示例代码抽到 `src/demos.ts`（`createTraceCallbacks`、`demoCalculator`、`demoFollowUp`、`demoExecuteShell`）；`index.ts` 精简为"组装 Agent + 启动示例"；请求/响应打印函数迁入 `src/utils.ts`；`pnpm-workspace.yaml` 中 esbuild 构建脚本设为 `false` |

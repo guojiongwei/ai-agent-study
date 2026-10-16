@@ -125,3 +125,12 @@ export async function demo8SkillsProduct() {
   );
   await printStream(stream7);
 }
+
+// Demo 9：验证 subagents——给一个"研究目录结构 + 改文件"的复合任务，观察主 Agent 如何把子任务分派给不同子 Agent
+export async function demo9SubAgentResearcher() {
+  const stream11 = await agent.stream(
+    { messages: [{ role: 'user', content: '帮我研究一下项目结构，在一个txt文件内把结构表示出来,同时修改一下index.html，变换一下你好字体颜色' }] },
+    { ...config1, streamMode: 'messages', callbacks: createTraceCallbacks() },
+  );
+  await printStream(stream11);
+}
