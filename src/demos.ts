@@ -44,7 +44,7 @@ export async function demoCalculator() {
 // （模型能看到上一轮的历史消息；想对比"不同 thread_id 记忆是否共享"，把 config1 换成另一个 thread_id 的配置即可）
 export async function demoFollowUp() {
   const stream = await agent.stream(
-    { messages: [{ role: 'user', content: '算的不对吧' }] },
+    { messages: [{ role: 'user', content: '再加10' }] },
     { ...config1, streamMode: 'messages', callbacks: createTraceCallbacks() },
   );
   await printStream(stream);
@@ -87,6 +87,20 @@ process.stdout.write('助手：');
   const stream4 = await agent.stream(
     { messages: [{ role: 'user', content: '在 /public/ 下创建一个 script.sh，内容是 echo "Hello World"，然后执行它' }] },
     { ...config3, streamMode: 'messages' },
+  );
+  await printStream(stream4);
+  console.log('\n');
+}
+
+
+// Demo 6
+export async function demo6Skills() {
+console.log('--- 测试 5：执行测试 skill 配置 ---');
+process.stdout.write('助手：');
+
+  const stream4 = await agent.stream(
+    { messages: [{ role: 'user', content: '退款政策是什么' }] },
+    { ...config1, streamMode: 'messages' },
   );
   await printStream(stream4);
   console.log('\n');

@@ -4,7 +4,7 @@ import { createDeepAgent } from 'deepagents';
 import { MemorySaver } from '@langchain/langgraph';
 import { model, backend } from './agents'
 import { calculatorTool, getCurrentTimeTool } from './tools';
-import { demoCalculator, demo4ExecuteShell, demo6ExecuteShell } from './demos';
+import { demoCalculator, demoFollowUp, demo4ExecuteShell, demo6ExecuteShell, demo6Skills } from './demos';
 
 // 创建 Agent：deepagents 内部会用 LangGraph 把流程编排成一张状态图，核心是两个节点来回跳
 // 「模型节点」判断要不要调工具 → 需要就去「工具节点」执行 → 结果回灌后再问模型，直到模型不再调工具
@@ -24,16 +24,23 @@ export const agent = createDeepAgent({
   // 检查点：把每一步的对话状态（消息列表）持久化下来
   // 这样同一个 thread_id 的下一次调用会自动带上历史消息，实现"多轮记忆"
   checkpointer: new MemorySaver(),
+  memory: ['/AGENTS.md'],
+  // 领域知识：扫描 /skills/ 下所有子目录
+  // 每个含 SKILL.md 的子目录被注册为一个 skill
+  skills: ['/skills/'],
 });
 
 // 启动入口：跑 demos.ts 里的示例（所有示例都集中在那里）
 async function main() {
   // 默认跑第一个示例；想验证多轮记忆，把这里换成 demoFollowUp() 即可
   // await demoCalculator();
+  // await demoFollowUp()
 
   // await demo4ExecuteShell()
 
-  await demo6ExecuteShell()
+  // await demo6ExecuteShell()
+
+  await demo6Skills()
 }
 
 main()
