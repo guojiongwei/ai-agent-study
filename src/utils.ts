@@ -277,3 +277,4 @@ export function printModelResponse(output: any) {
   );
   console.log('');
 }
+

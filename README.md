@@ -67,8 +67,9 @@ ai-agent-study/
     ├── utils.ts        # 终端打印：printStream / printModelRequest / printModelResponse
     ├── middleware.ts   # 中间件：摘要压缩（summarization）+ 记忆注入（memory）
     ├── subagents.ts    # 子 Agent 定义：researcher（研究）/ coder（编码）/ reviewer（审查）
-    ├── demos.ts        # 示例集合：createTraceCallbacks / demoCalculator / demoFollowUp / demo4~6ExecuteShell / demo6SkillsRefound / demo7Agents / demo8SkillsProduct / demo9SubAgentResearcher
-    └── index.ts        # 入口：组装 Agent 并启动某个示例
+    ├── hitl.ts         # 人工审批：中断检测、展示待审批操作、收集决策并恢复执行
+    ├── demos.ts        # 示例集合：demo1~9（调用流程）+ demo13~15（人工审批）
+    └── index.ts        # 入口：组装 Agent（含 interruptOn 审批配置）并启动某个示例
 ```
 
 ---
@@ -210,6 +211,55 @@ export const researcher: SubAgent = {
 
 ---
 
+## 人工审批（HITL）
+
+有些工具不该让 Agent 直接执行——`execute` 能删文件、`write_file` 能覆盖内容。`createDeepAgent` 的 `interruptOn` 选项用来声明"哪些工具在执行前必须人工确认"：
+
+```ts
+interruptOn: {
+  execute: {
+    allowedDecisions: ['approve', 'reject'] as const,
+    description: '⚠️ Shell 命令即将执行，请确认后审批',
+  },
+  write_file: {
+    allowedDecisions: ['approve', 'edit', 'reject'] as const,
+    description: '📝 文件写入操作，请审批',
+  },
+  edit_file: { /* 同上 */ },
+},
+```
+
+| 配置项 | 含义 |
+| --- | --- |
+| 工具名（`execute` / `write_file` / `edit_file`） | 需要审批的工具；**没列出的工具自动放行**（如 `calculator`、`read_file`） |
+| `allowedDecisions` | 该工具允许的决策：`approve`（批准）、`reject`（拒绝）、`edit`（改参数后执行） |
+| `description` | 展示给审批人的说明，会出现在中断提示里 |
+
+中断 → 审批 → 恢复的完整流程（实现见 [src/hitl.ts](src/hitl.ts)）：
+
+```
+agent.invoke(消息, config)
+   ↓ 模型决定调用 execute
+【中断】isInterrupted(result) 为 true，result[INTERRUPT] 拿出 actionRequests
+   ↓ 展示待审批操作 → 用户在终端输入 y / n / e
+构造 HITLResponse = { decisions: [...] }
+   ↓ 用 new Command({ resume: hitlResponse }) 恢复
+agent.invoke(Command, config)     ← 必须传同一个 config（同一个 thread_id）
+   ↓ 可能再次中断（多个工具连续需要审批），递归处理
+拿到最终状态 → 打印最后一条 AI 消息
+```
+
+四点关键：
+
+- **必须有 `checkpointer`**：中断时的状态要靠它保存，否则恢复不回来（本项目已有 `MemorySaver`）。
+- **恢复要用同一个 `config`**：所以 [src/hitl.ts](src/hitl.ts) 复用的是 [src/index.ts](src/index.ts) 导出的 `config`（`session-1`）。注意 `demos.ts` 里的 `config1` 是给 `agent.stream` 示例用的，两者 `thread_id` 相同但各自独立。
+- **这批示例用 `agent.invoke` 而不是 `agent.stream`**：需要拿到完整状态判断"是否中断"，并靠 `Command` 恢复。
+- **必须在真实终端里运行**：审批要读键盘输入（`process.stdin`），管道或非交互式环境会一直等下去。
+
+验证方式见示例 `demo13InterruptExecute()`（shell 审批，只允许 y / n）、`demo14InterruptWriteFile()`（写文件审批，可以试 `e` 改参数）、`demo15MixedApproval()`（计算自动放行 + shell 触发审批）。
+
+---
+
 ## 示例（demos.ts）
 
 所有"怎么调用 Agent"的示例集中在 [src/demos.ts](src/demos.ts)：
@@ -226,27 +276,36 @@ export const researcher: SubAgent = {
 | `demo7Agents()` | `session-1` | 让模型写一个合并数组的工具函数，验证 `AGENTS.md` 里的编码约束（TypeScript、中文注释等）是否被遵守 |
 | `demo8SkillsProduct()` | `session-1` | 问"这个项目支持哪些工具、怎么运行"，验证 `product-faq` 技能 |
 | `demo9SubAgentResearcher()` | `session-1` | 给一个"研究目录结构 + 修改 `index.html` 字体颜色"的复合任务，观察主 Agent 如何把两个子任务分别委派给 `researcher` 和 `coder` |
+| `demo13InterruptExecute()` | `session-1` | 让模型执行 `echo`，触发 `execute` 的审批中断（只允许 y / n） |
+| `demo14InterruptWriteFile()` | `session-1` | 让模型在 `/public/` 下写 `hitl-test.txt`，触发 `write_file` 的审批中断（可试 `e` 改参数） |
+| `demo15MixedApproval()` | `session-1` | 先算 256 ÷ 8（自动放行）再执行 `echo`（触发审批），观察同一轮里的两种处理 |
 
-切换示例：改 [src/index.ts](src/index.ts) 里 `main()` 调用的函数即可（当前默认跑 `demo9SubAgentResearcher()`）。
+切换示例：改 [src/index.ts](src/index.ts) 里 `main()` 调用的函数即可（当前默认跑 `demo13InterruptExecute()`）。
 
 ```ts
 async function main() {
   // await demoCalculator();
   // await demoFollowUp()
-
   // await demo4ExecuteShell()
-
+  // await demo5ExecuteShell()
   // await demo6ExecuteShell()
-
   // await demo6SkillsRefound()
   // await demo7Agents()
-  await demo9SubAgentResearcher()
+  // await demo8SkillsProduct()
+  // await demo9SubAgentResearcher()
+
+  // 下面三个是人工审批（HITL）示例：运行到需要审批的工具时，终端会暂停等待键盘输入
+  // await demo14InterruptWriteFile()
+  // await demo15MixedApproval()
+  await demo13InterruptExecute()
 }
 ```
 
 > Demo 4/5/6 共用 `config3`（`session-3`），`demo6SkillsRefound` / `demo7Agents` / `demo8SkillsProduct` / `demo9SubAgentResearcher` 用 `config1`（`session-1`）。其中 `demo9SubAgentResearcher` 挂了 `traceCallbacks`，能在「模型请求」里看到主 Agent 是怎么向子 Agent 描述任务的；其余几例没挂，终端只输出流式的思考、工具调用与结果——想连"请求参数 / 响应结构"一起看，在它们的 `agent.stream` 选项里补上 `callbacks: createTraceCallbacks()` 即可。
 
-> `demos.ts` 与 `index.ts` 之间存在循环引用（后者引前者触发示例，前者引后者的 `agent`）。因为 `demos.ts` 只在函数体内使用 `agent`、模块顶层不访问，ESM 的 live binding 可以正常工作。
+> `demo13` ~ `demo15` 不走 `agent.stream`：它们调用 [src/hitl.ts](src/hitl.ts) 的 `runWithInterruptHandling`，用的是 [src/index.ts](src/index.ts) 里的 `config`。
+
+> `demos.ts`、`hitl.ts` 与 `index.ts` 之间存在循环引用（`index.ts` 引示例以触发运行，`demos.ts` / `hitl.ts` 引 `index.ts` 的 `agent` 与 `config`）。因为后两者都只在函数体内访问这些导出、模块顶层不碰，ESM 的 live binding 可以正常工作。
 
 ---
 
@@ -299,7 +358,8 @@ export const config = {
 
 | 版本 | 日期 | 变更内容 |
 | --- | --- | --- |
-| v1.5.0 | 2026-10-16 | 工作区改动（尚未提交）：新增 `src/subagents.ts`（`researcher` / `coder` / `reviewer` 三个子 Agent），`index.ts` 增加 `subagents` 选项；新增示例 `demo9SubAgentResearcher`（研究 + 改文件的复合任务，已挂 `traceCallbacks` 便于观察委派过程）；`workspace/AGENTS.md` 新增「环境注意」（文件工具的虚拟目录与 `execute` 的真实文件系统互不通用）；`workspace/conversation_history/` 为记忆机制落盘的会话记录；README 新增「子 Agent（subagents）」章节 |
+| v1.6.0 | 2026-10-16 | 工作区改动（尚未提交）：`createDeepAgent` 增加 `interruptOn` 配置（`execute` / `write_file` / `edit_file` 执行前需人工审批）；新增 `src/hitl.ts`（中断检测、审批交互、`Command` 恢复，导出 `runWithInterruptHandling`）；新增示例 `demo13InterruptExecute` / `demo14InterruptWriteFile` / `demo15MixedApproval`；`index.ts` 精简为"组装 Agent + 启动示例"，审批交互与示例分别归入 `hitl.ts`、`demos.ts`；README 新增「人工审批（HITL）」章节 |
+| v1.5.0 | 2026-10-16 | 对应提交 `9280b94`：新增 `src/subagents.ts`（`researcher` / `coder` / `reviewer` 三个子 Agent），`index.ts` 增加 `subagents` 选项；新增示例 `demo9SubAgentResearcher`（研究 + 改文件的复合任务，已挂 `traceCallbacks` 便于观察委派过程）；`workspace/AGENTS.md` 新增「环境注意」（文件工具的虚拟目录与 `execute` 的真实文件系统互不通用）；`workspace/conversation_history/` 为记忆机制落盘的会话记录；README 新增「子 Agent（subagents）」章节 |
 | v1.4.0 | 2026-10-16 | 对应提交 `ffa8e32`：新增 `src/middleware.ts`，定义 `summarizationMiddleware`（超过 20 条消息触发摘要压缩、保留最近 10 条原文）与 `memoryAgentsMiddleware`（把 `AGENTS.md` 注入请求、启用 prompt 缓存）；`index.ts` 增加 `middleware` 选项挂载两者；README 新增「通过中间件增强记忆」小节；新增示例 `demo6SkillsRefound`（退款金额计算，验证 `refund-policy`）、`demo7Agents`（写工具函数，验证 `AGENTS.md`）、`demo8SkillsProduct`（项目 FAQ，验证 `product-faq`） |
 | v1.3.0 | 2026-10-16 | 对应提交 `c86d287`：新增 `workspace/AGENTS.md`（用户偏好、项目上下文、编码约束），`createDeepAgent` 增加 `memory: ['/AGENTS.md']` 与 `skills: ['/skills/']` 两个选项；新增三个技能文档 `code-review`、`product-faq`、`refund-policy`（均含带 YAML frontmatter 的 `SKILL.md`）；新增示例 `demo6Skills`（问「退款政策是什么」验证技能加载），`demoFollowUp` 的提问改为「再加10」；README 新增「持久记忆与领域技能」章节 |
 | v1.2.0 | 2026-10-15 | 对应提交 `5052487`：新增三个文件 / shell 操作示例 `demo4ExecuteShell`（写入 HTML）、`demo5ExecuteShell`（列目录并统计文件数）、`demo6ExecuteShell`（创建并执行 `script.sh`），共用会话 `config3`（`session-3`）；`workspace/` 下生成 `index.html` 与 `public/script.sh`；`index.ts` 默认改为跑 `demo6ExecuteShell()`；README 补充文件后端能力、示例用法与项目结构 |

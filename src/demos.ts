@@ -3,6 +3,7 @@
 
 import { agent } from './index';
 import { printStream, printModelRequest, printModelResponse } from './utils';
+import { runWithInterruptHandling } from './hitl';
 
 // 会话标识：同一个 thread_id 视为同一段对话（记忆共享），不同 thread_id 相互隔离
 // 导出给 demos.ts 使用：示例函数会带上它，从而共享同一段对话记忆
@@ -129,8 +130,39 @@ export async function demo8SkillsProduct() {
 // Demo 9：验证 subagents——给一个"研究目录结构 + 改文件"的复合任务，观察主 Agent 如何把子任务分派给不同子 Agent
 export async function demo9SubAgentResearcher() {
   const stream11 = await agent.stream(
-    { messages: [{ role: 'user', content: '帮我研究一下项目结构，在一个txt文件内把结构表示出来,同时修改一下index.html，变换一下你好字体颜色' }] },
+    { messages: [{ role: 'user', content: '修改一下index.html，变换一下你好字体颜色' }] },
     { ...config1, streamMode: 'messages', callbacks: createTraceCallbacks() },
   );
   await printStream(stream11);
+}
+
+// ============ 人工审批（HITL）示例 ============
+// 与上面的示例不同：这几个走 agent.invoke + 中断恢复（见 hitl.ts），必须用 agent.invoke
+// 运行到需要审批的工具时终端会暂停，等你在键盘上输入 y / n（或 e 编辑参数）
+
+// Demo 13：execute（shell 命令）需要人工审批——配置里只允许 approve / reject
+export async function demo13InterruptExecute() {
+  console.log('--- 测试 13：execute 工具中断（Shell 命令需要审批） ---');
+  console.log('用户：执行 echo "Hello from HITL!" 命令');
+  process.stdout.write('助手：');
+
+  await runWithInterruptHandling('执行 echo "Hello from HITL!" 命令');
+}
+
+// Demo 14：write_file（写文件）需要人工审批——允许 approve / edit / reject，可以改参数后再放行
+export async function demo14InterruptWriteFile() {
+  console.log('--- 测试 14：write_file 工具中断（文件写入需要审批） ---');
+  console.log('用户：在 /public/ 下创建一个 hitl-test.txt');
+  process.stdout.write('助手：');
+
+  await runWithInterruptHandling('在 /public/ 下创建一个 hitl-test.txt，内容是 "Human approved this!"');
+}
+
+// Demo 15：混合场景——calculator 自动放行（不打断），execute 才触发审批
+export async function demo15MixedApproval() {
+  console.log('--- 测试 15：混合场景（自动放行 + 需要审批） ---');
+  console.log('用户：先帮我算 256 除以 8，然后执行 echo "计算完成"');
+  process.stdout.write('助手：');
+
+  await runWithInterruptHandling('先帮我算 256 除以 8，然后执行 echo "计算完成"');
 }
